@@ -552,6 +552,19 @@ export default function App() {
   const [dateRange, setDateRange] = useState(null);
   const fileRef = useRef();
 
+  // Force light theme on body/html (prevents browser dark mode override)
+  useEffect(() => {
+    document.documentElement.style.background = "#fff";
+    document.documentElement.style.color = "#000";
+    document.body.style.background = "#fff";
+    document.body.style.color = "#000";
+    document.body.style.margin = "0";
+    // Also override any color-scheme meta
+    let meta = document.querySelector('meta[name="color-scheme"]');
+    if (!meta) { meta = document.createElement("meta"); meta.name = "color-scheme"; document.head.appendChild(meta); }
+    meta.content = "light only";
+  }, []);
+
   const handleFile = useCallback(async (e) => {
     const file = e.target.files?.[0];
     if (!file) return;
