@@ -188,9 +188,9 @@ function UploadPage({ onFile, fileRef, loading, error, debugInfo }) {
 function StaticSidebar({ page, setPage, txns, fileRef, onFile }) {
   const items = [
     { key: PAGES.OVERVIEW, label: "Overview", icon: "📊" },
+    { key: PAGES.CALENDAR, label: "Calendar", icon: "📅" },
     { key: PAGES.TRANSACTIONS, label: "Transactions", icon: "📋" },
     { key: PAGES.TRENDS, label: "Trends", icon: "📈" },
-    { key: PAGES.CALENDAR, label: "Calendar", icon: "📅" },
   ];
   const debits = txns.filter(t => t.type === "DEBIT");
   const credits = txns.filter(t => t.type === "CREDIT");
@@ -226,15 +226,12 @@ function StaticSidebar({ page, setPage, txns, fileRef, onFile }) {
 }
 
 // ─── Threshold Analysis ────────────────────────────────────────────────
-function ThresholdAnalysis({ txns }) {
-  const [threshold, setThreshold] = useState(500);
-  const [inputVal, setInputVal] = useState("500");
-  const [mode, setMode] = useState("spent");
+function ThresholdAnalysis({ txns, mode, setMode, threshold, setThreshold, inputVal, setInputVal }) {
   const dailyMap = useMemo(() => { const m = {}; txns.forEach(t => { const k = t.date; if (!m[k]) m[k] = { spent: 0, received: 0 }; if (t.type === "DEBIT") m[k].spent += t.amount; else m[k].received += t.amount; }); return m; }, [txns]);
   const totalDays = Object.keys(dailyMap).length;
   const spentDays = Object.values(dailyMap).filter(d => d.spent > 0).length;
   const receivedDays = Object.values(dailyMap).filter(d => d.received > 0).length;
-  const thresholdDays = useMemo(() => Object.values(dailyMap).filter(d => mode === "spent" ? d.spent >= threshold : d.received >= threshold).length, [dailyMap, threshold, mode]);
+  const thresholdDays = useMemo(() => Object.values(dailyMap).filter(d => { const val = mode === "spent" ? d.spent : d.received; return val > 0 && val >= threshold; }).length, [dailyMap, threshold, mode]);
   const handleInput = (val) => { setInputVal(val); const n = parseInt(val); if (!isNaN(n) && n >= 0) setThreshold(n); };
   const maxAmount = useMemo(() => Math.max(...Object.values(dailyMap).map(d => mode === "spent" ? d.spent : d.received), 1), [dailyMap, mode]);
   return (
@@ -490,7 +487,11 @@ function TrendsPage({ txns, dailyData, categoryData, topMerchants, topTxn }) {
 
 // ─── Calendar Page (heatmap + threshold) ───────────────────────────────
 function CalendarPage({ txns }) {
-  const debits = useMemo(() => txns.filter(t => t.type === "DEBIT"), [txns]);
+  // Shared state between threshold widget and calendar
+  const [mode, setMode] = useState("spent");
+  const [threshold, setThreshold] = useState(500);
+  const [inputVal, setInputVal] = useState("500");
+
   const dates = txns.map(t => t.dateObj);
   const refDate = dates.length ? new Date(Math.max(...dates)) : new Date();
   const [viewYear, setViewYear] = useState(refDate.getFullYear());
@@ -498,107 +499,117 @@ function CalendarPage({ txns }) {
   const monthNames = ["January","February","March","April","May","June","July","August","September","October","November","December"];
   const dayHeaders = ["M", "T", "W", "Th", "F", "Sa", "Su"];
 
-  // Build daily spending map (debits only)
-  const dailySpent = useMemo(() => {
+  // Build daily maps for both spent & received
+  const dailyMap = useMemo(() => {
     const m = {};
-    debits.forEach(t => {
+    txns.forEach(t => {
       const d = t.dateObj;
       const key = `${d.getFullYear()}-${String(d.getMonth() + 1).padStart(2, "0")}-${String(d.getDate()).padStart(2, "0")}`;
-      m[key] = (m[key] || 0) + t.amount;
+      if (!m[key]) m[key] = { spent: 0, received: 0 };
+      if (t.type === "DEBIT") m[key].spent += t.amount; else m[key].received += t.amount;
     });
     return m;
-  }, [debits]);
+  }, [txns]);
 
   const daysInMonth = new Date(viewYear, viewMonth + 1, 0).getDate();
-  const firstDayRaw = new Date(viewYear, viewMonth, 1).getDay();
-  const firstDayMon = (firstDayRaw + 6) % 7;
+  const firstDayMon = (new Date(viewYear, viewMonth, 1).getDay() + 6) % 7;
   const cells = [];
   for (let i = 0; i < firstDayMon; i++) cells.push(null);
   for (let d = 1; d <= daysInMonth; d++) cells.push(d);
   while (cells.length % 7 !== 0) cells.push(null);
 
   const todayKey = (() => { const d = new Date(); return `${d.getFullYear()}-${String(d.getMonth() + 1).padStart(2, "0")}-${String(d.getDate()).padStart(2, "0")}`; })();
+  const isSpentMode = mode === "spent";
 
-  // Max spending in month for intensity scaling
-  const monthSpends = [];
+  // Max amount in month for intensity scaling
+  const monthAmounts = [];
   for (let d = 1; d <= daysInMonth; d++) {
     const key = `${viewYear}-${String(viewMonth + 1).padStart(2, "0")}-${String(d).padStart(2, "0")}`;
-    if (dailySpent[key]) monthSpends.push(dailySpent[key]);
+    const dm = dailyMap[key];
+    const val = dm ? (isSpentMode ? dm.spent : dm.received) : 0;
+    if (val > 0) monthAmounts.push(val);
   }
-  const maxSpend = monthSpends.length ? Math.max(...monthSpends) : 1;
+  const maxAmt = monthAmounts.length ? Math.max(...monthAmounts) : 1;
 
-  // Month totals
-  let monthTotal = 0, spentDayCount = 0, noSpendDays = 0;
+  // Month stats
+  let monthTotal = 0, activeDays = 0, inactiveDays = 0;
   for (let d = 1; d <= daysInMonth; d++) {
     const key = `${viewYear}-${String(viewMonth + 1).padStart(2, "0")}-${String(d).padStart(2, "0")}`;
-    const amt = dailySpent[key] || 0;
-    monthTotal += amt;
-    if (amt > 0) spentDayCount++; else if (key <= todayKey) noSpendDays++;
+    const dm = dailyMap[key];
+    const val = dm ? (isSpentMode ? dm.spent : dm.received) : 0;
+    monthTotal += val;
+    if (val > 0) activeDays++; else if (key <= todayKey) inactiveDays++;
   }
   const avgPerDay = daysInMonth > 0 ? Math.round(monthTotal / daysInMonth) : 0;
 
-  const shiftMonth = (dir) => {
-    let m = viewMonth + dir, y = viewYear;
-    if (m < 0) { m = 11; y--; } if (m > 11) { m = 0; y++; }
-    setViewYear(y); setViewMonth(m);
-  };
+  const shiftMonth = (dir) => { let m = viewMonth + dir, y = viewYear; if (m < 0) { m = 11; y--; } if (m > 11) { m = 0; y++; } setViewYear(y); setViewMonth(m); };
 
-  function getSpendColor(amt) {
-    if (amt <= 0) return "#d4edda"; // green for no-spend
-    const intensity = Math.min(amt / maxSpend, 1);
-    // Fade from light red to dark red based on intensity
-    const r = 230;
-    const g = Math.round(200 - intensity * 160);
-    const b = Math.round(200 - intensity * 140);
-    return `rgb(${r},${g},${b})`;
+  // Color logic: spent mode = red for spend, green for no-spend | received mode = green for receive, red for no-receive
+  function getCellColor(val, isFuture) {
+    if (isFuture) return "#fff";
+    if (isSpentMode) {
+      if (val <= 0) return "#d4edda"; // green = no spend (good)
+      const t = Math.min(val / maxAmt, 1);
+      return `rgb(230, ${Math.round(200 - t * 155)}, ${Math.round(200 - t * 140)})`; // light red → dark red
+    } else {
+      if (val <= 0) return "#fff0f0"; // red-ish = no receive (bad)
+      const t = Math.min(val / maxAmt, 1);
+      return `rgb(${Math.round(210 - t * 170)}, ${Math.round(230 - t * 30)}, ${Math.round(210 - t * 80)})`; // light green → dark green
+    }
   }
+  function getTextColor(val, isFuture) {
+    if (isFuture) return "#ccc";
+    if (isSpentMode) return val > 0 ? "#7c1d1d" : "#166534";
+    else return val > 0 ? "#166534" : "#991b1b";
+  }
+
+  const activeLabel = isSpentMode ? "Spent Days" : "Received Days";
+  const activeColor = isSpentMode ? "#E63946" : "#2A9D8F";
 
   return (
     <div style={{ fontFamily: F }}>
       <SH>Detailed Analysis</SH>
-      <ThresholdAnalysis txns={txns} />
+      <ThresholdAnalysis txns={txns} mode={mode} setMode={setMode} threshold={threshold} setThreshold={setThreshold} inputVal={inputVal} setInputVal={setInputVal} />
 
-      <SH>Monthly Calendar</SH>
-      {/* Month nav */}
-      <div style={{ display: "flex", alignItems: "center", justifyContent: "center", gap: 20, marginBottom: 16 }}>
+      <SH>Monthly Calendar — {isSpentMode ? "Spending" : "Received"}</SH>
+      <div style={{ display: "flex", alignItems: "center", justifyContent: "center", gap: 20, marginBottom: 12 }}>
         <button onClick={() => shiftMonth(-1)} style={{ border: "none", background: "none", fontSize: 18, cursor: "pointer" }}>←</button>
-        <span style={{ fontSize: 16, fontWeight: 800, minWidth: 160, textAlign: "center" }}>{monthNames[viewMonth]} {viewYear}</span>
+        <span style={{ fontSize: 15, fontWeight: 800, minWidth: 150, textAlign: "center" }}>{monthNames[viewMonth]} {viewYear}</span>
         <button onClick={() => shiftMonth(1)} style={{ border: "none", background: "none", fontSize: 18, cursor: "pointer" }}>→</button>
       </div>
-
-      {/* Month summary strip */}
-      <div style={{ display: "flex", gap: 8, marginBottom: 16, flexWrap: "wrap" }}>
-        <StatPill label="Month Total" value={fmt(monthTotal)} color="#E63946" />
+      <div style={{ display: "flex", gap: 8, marginBottom: 12, flexWrap: "wrap" }}>
+        <StatPill label="Month Total" value={fmt(monthTotal)} color={activeColor} />
         <StatPill label="Avg / Day" value={fmt(avgPerDay)} />
-        <StatPill label="Spent Days" value={String(spentDayCount)} color="#E63946" sub={`${noSpendDays} no-spend`} />
+        <StatPill label={activeLabel} value={String(activeDays)} color={activeColor} sub={`${inactiveDays} inactive`} />
       </div>
 
-      {/* Calendar grid */}
-      <div style={{ borderRadius: 10, overflow: "hidden", border: "1px solid #ddd" }}>
-        {/* Day headers */}
+      {/* Compact calendar grid */}
+      <div style={{ borderRadius: 8, overflow: "hidden", border: "1px solid #ddd" }}>
         <div style={{ display: "grid", gridTemplateColumns: "repeat(7, 1fr)" }}>
           {dayHeaders.map((d, i) => (
-            <div key={i} style={{ height: 28, display: "flex", alignItems: "center", justifyContent: "center", fontSize: 10, fontWeight: 700, color: "#666", background: "#f0f0f0", borderBottom: "2px solid #000", borderRight: i < 6 ? "1px solid #ddd" : "none" }}>{d}</div>
+            <div key={i} style={{ height: 24, display: "flex", alignItems: "center", justifyContent: "center", fontSize: 9, fontWeight: 700, color: "#666", background: "#f0f0f0", borderBottom: "2px solid #000", borderRight: i < 6 ? "1px solid #ddd" : "none" }}>{d}</div>
           ))}
         </div>
-        {/* Day cells */}
         <div style={{ display: "grid", gridTemplateColumns: "repeat(7, 1fr)" }}>
           {cells.map((day, i) => {
-            if (day === null) return <div key={`e${i}`} style={{ aspectRatio: "1", borderBottom: "1px solid #eee", borderRight: i % 7 < 6 ? "1px solid #eee" : "none", background: "#fafafa" }} />;
+            if (day === null) return <div key={`e${i}`} style={{ height: 34, borderBottom: "1px solid #eee", borderRight: i % 7 < 6 ? "1px solid #eee" : "none", background: "#fafafa" }} />;
             const key = `${viewYear}-${String(viewMonth + 1).padStart(2, "0")}-${String(day).padStart(2, "0")}`;
-            const amt = dailySpent[key] || 0;
+            const dm = dailyMap[key];
+            const val = dm ? (isSpentMode ? dm.spent : dm.received) : 0;
             const isToday = key === todayKey;
             const isFuture = key > todayKey;
-            const bg = isFuture ? "#fff" : getSpendColor(amt);
-            const color = isFuture ? "#ccc" : amt > 0 ? "#7c1d1d" : "#166534";
+            const meetsThreshold = val > 0 && val >= threshold;
+            const bg = getCellColor(val, isFuture);
+            const color = getTextColor(val, isFuture);
             return (
-              <div key={i} title={`${key}${amt ? " — " + fmt(amt) : " — No spend"}`} style={{
-                aspectRatio: "1", borderBottom: "1px solid #eee", borderRight: i % 7 < 6 ? "1px solid #eee" : "none",
-                background: bg, display: "flex", flexDirection: "column", alignItems: "center", justifyContent: "center",
-                border: isToday ? "2.5px solid #000" : undefined, position: "relative", zIndex: isToday ? 2 : 1, cursor: "default"
+              <div key={i} title={`${key} — ${val > 0 ? fmt(val) : (isSpentMode ? "No spend" : "No receive")}`} style={{
+                height: 34, borderBottom: "1px solid #eee", borderRight: i % 7 < 6 ? "1px solid #eee" : "none",
+                background: bg, display: "flex", alignItems: "center", justifyContent: "center", gap: 2,
+                outline: isToday ? "2.5px solid #000" : meetsThreshold && !isFuture ? `1.5px solid ${activeColor}` : "none",
+                outlineOffset: "-1px", position: "relative", zIndex: isToday ? 2 : 1, cursor: "default"
               }}>
-                <div style={{ fontSize: 12, fontWeight: isToday ? 900 : 600, color }}>{day}</div>
-                {amt > 0 && !isFuture && <div style={{ fontSize: 8, fontWeight: 700, color: "#b91c1c", marginTop: 1 }}>{amt >= 1000 ? `${(amt / 1000).toFixed(1)}k` : amt}</div>}
+                <span style={{ fontSize: 10, fontWeight: isToday ? 900 : 600, color, lineHeight: 1 }}>{day}</span>
+                {val > 0 && !isFuture && <span style={{ fontSize: 7, fontWeight: 700, color, lineHeight: 1 }}>{val >= 1000 ? `${(val / 1000).toFixed(1)}k` : val}</span>}
               </div>
             );
           })}
@@ -606,11 +617,17 @@ function CalendarPage({ txns }) {
       </div>
 
       {/* Legend */}
-      <div style={{ display: "flex", justifyContent: "center", gap: 16, fontSize: 11, color: "#555", marginTop: 12, fontWeight: 600 }}>
-        <span style={{ display: "flex", alignItems: "center", gap: 5 }}><span style={{ width: 14, height: 14, background: "#d4edda", border: "1px solid #aaa", display: "inline-block", borderRadius: 2 }} /> No spend</span>
-        <span style={{ display: "flex", alignItems: "center", gap: 5 }}><span style={{ width: 14, height: 14, background: "rgb(230,170,170)", border: "1px solid #aaa", display: "inline-block", borderRadius: 2 }} /> Low</span>
-        <span style={{ display: "flex", alignItems: "center", gap: 5 }}><span style={{ width: 14, height: 14, background: "rgb(230,60,60)", border: "1px solid #aaa", display: "inline-block", borderRadius: 2 }} /> High</span>
-        <span style={{ display: "flex", alignItems: "center", gap: 5 }}><span style={{ width: 14, height: 14, background: "#fff", border: "1px solid #aaa", display: "inline-block", borderRadius: 2 }} /> Future</span>
+      <div style={{ display: "flex", justifyContent: "center", gap: 12, fontSize: 10, color: "#555", marginTop: 10, fontWeight: 600, flexWrap: "wrap" }}>
+        {isSpentMode ? (<>
+          <span style={{ display: "flex", alignItems: "center", gap: 4 }}><span style={{ width: 12, height: 12, background: "#d4edda", border: "1px solid #aaa", display: "inline-block", borderRadius: 2 }} /> No spend</span>
+          <span style={{ display: "flex", alignItems: "center", gap: 4 }}><span style={{ width: 12, height: 12, background: "rgb(230,170,170)", border: "1px solid #aaa", display: "inline-block", borderRadius: 2 }} /> Low</span>
+          <span style={{ display: "flex", alignItems: "center", gap: 4 }}><span style={{ width: 12, height: 12, background: "rgb(230,50,50)", border: "1px solid #aaa", display: "inline-block", borderRadius: 2 }} /> High</span>
+        </>) : (<>
+          <span style={{ display: "flex", alignItems: "center", gap: 4 }}><span style={{ width: 12, height: 12, background: "#fff0f0", border: "1px solid #aaa", display: "inline-block", borderRadius: 2 }} /> No receive</span>
+          <span style={{ display: "flex", alignItems: "center", gap: 4 }}><span style={{ width: 12, height: 12, background: "rgb(180,220,180)", border: "1px solid #aaa", display: "inline-block", borderRadius: 2 }} /> Low</span>
+          <span style={{ display: "flex", alignItems: "center", gap: 4 }}><span style={{ width: 12, height: 12, background: "rgb(40,160,80)", border: "1px solid #aaa", display: "inline-block", borderRadius: 2 }} /> High</span>
+        </>)}
+        <span style={{ display: "flex", alignItems: "center", gap: 4 }}><span style={{ width: 12, height: 12, background: "#fff", border: "1px solid #aaa", display: "inline-block", borderRadius: 2 }} /> Future</span>
       </div>
     </div>
   );
@@ -673,9 +690,9 @@ export default function App() {
       <StaticSidebar page={page} setPage={setPage} txns={txns} fileRef={fileRef} onFile={handleFile} />
       <div style={{ marginLeft: SW, flex: 1, padding: "20px 28px 60px", maxWidth: 800 }}>
         {page === PAGES.OVERVIEW && <OverviewPage txns={txns} categoryData={categoryData} totalSpent={totalSpent} totalReceived={totalReceived} dailyData={dailyData} weeklyData={weeklyData} topMerchants={topMerchants} avgDaily={avgDaily} topTxn={topTxn} dateRange={dateRange} />}
+        {page === PAGES.CALENDAR && <CalendarPage txns={txns} />}
         {page === PAGES.TRANSACTIONS && <TransactionsPage txns={txns} setTxns={setTxns} />}
         {page === PAGES.TRENDS && <TrendsPage txns={txns} dailyData={dailyData} categoryData={categoryData} topMerchants={topMerchants} topTxn={topTxn} />}
-        {page === PAGES.CALENDAR && <CalendarPage txns={txns} />}
         <div style={{ marginTop: 48, padding: "14px 20px", borderRadius: 12, background: "#E8F4FD", display: "flex", alignItems: "center", justifyContent: "center" }}>
           <span style={{ fontSize: 13, fontWeight: 600, color: "#4A5568" }}>Vibe coded by Nithin Chowdary <span style={{ color: "#E53E3E", fontSize: 15 }}>❤️</span></span>
         </div>
