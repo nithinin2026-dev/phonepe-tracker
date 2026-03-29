@@ -244,7 +244,7 @@ function HamburgerBtn({ onClick, pageName }) {
 
 // ─── Threshold Analysis ────────────────────────────────────────────────
 function ThresholdAnalysis({ txns, mode, setMode, threshold, setThreshold, inputVal, setInputVal }) {
-  const dailyMap = useMemo(() => { const m = {}; txns.forEach(t => { const k = t.date; if (!m[k]) m[k] = { spent: 0, received: 0 }; if (t.type === "DEBIT") m[k].spent += t.amount; else m[k].received += t.amount; }); return m; }, [txns]);
+  const dailyMap = useMemo(() => { const m = {}; txns.forEach(t => { const d = t.dateObj; const k = `${d.getFullYear()}-${String(d.getMonth() + 1).padStart(2, "0")}-${String(d.getDate()).padStart(2, "0")}`; if (!m[k]) m[k] = { spent: 0, received: 0 }; if (t.type === "DEBIT") m[k].spent += t.amount; else m[k].received += t.amount; }); return m; }, [txns]);
   const totalDays = Object.keys(dailyMap).length;
   const spentDays = Object.values(dailyMap).filter(d => d.spent > 0).length;
   const receivedDays = Object.values(dailyMap).filter(d => d.received > 0).length;
@@ -442,7 +442,7 @@ function TrendsPage({ txns, dailyData, categoryData, topMerchants, topTxn }) {
     if (daysInMonth > 28) ranges.push({ label: "W5", sub: `29–${daysInMonth}`, start: 29, end: daysInMonth });
 
     const dailyMap = {};
-    debits.forEach(t => { const k = t.date; dailyMap[k] = (dailyMap[k] || 0) + t.amount; });
+    debits.forEach(t => { const d = t.dateObj; const k = `${d.getFullYear()}-${String(d.getMonth() + 1).padStart(2, "0")}-${String(d.getDate()).padStart(2, "0")}`; dailyMap[k] = (dailyMap[k] || 0) + t.amount; });
 
     return ranges.map(r => {
       let weekdayTotal = 0, weekdayCount = 0, weekendTotal = 0, weekendCount = 0, total = 0;
@@ -451,9 +451,7 @@ function TrendsPage({ txns, dailyData, categoryData, topMerchants, topTxn }) {
         const dayOfWeek = dayObj.getDay();
         const isWeekend = dayOfWeek === 0 || dayOfWeek === 5 || dayOfWeek === 6;
         const key = `${year}-${String(month + 1).padStart(2, "0")}-${String(d).padStart(2, "0")}`;
-        const matchedAmt = dailyMap[key] || Object.entries(dailyMap).find(([k]) => {
-          try { const pd = new Date(k + " 12:00 PM"); return pd.getDate() === d && pd.getMonth() === month && pd.getFullYear() === year; } catch { return false; }
-        })?.[1] || 0;
+        const matchedAmt = dailyMap[key] || 0;
         total += matchedAmt;
         if (isWeekend) { weekendTotal += matchedAmt; weekendCount++; }
         else { weekdayTotal += matchedAmt; weekdayCount++; }
