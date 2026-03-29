@@ -342,7 +342,7 @@ function OverviewPage({ txns, categoryData, totalSpent, totalReceived, dailyData
   );
 }
 
-// ─── Transactions Page (sortable — FIXED) ──────────────────────────────
+// ─── Transactions Page (sortable + summary bar) ────────────────────────
 function TransactionsPage({ txns, setTxns }) {
   const [catFilter, setCatFilter] = useState("All");
   const [typeFilter, setTypeFilter] = useState("All");
@@ -365,20 +365,28 @@ function TransactionsPage({ txns, setTxns }) {
       } else if (sortBy === "type") {
         c = (a.type || "").localeCompare(b.type || "");
       }
-      // Tiebreaker: by amount then by id for stable sort
       if (c === 0 && sortBy !== "amount") c = a.amount - b.amount;
       if (c === 0) c = (a.id || 0) - (b.id || 0);
       return sortDir === "desc" ? -c : c;
     });
     return list;
   }, [txns, catFilter, typeFilter, searchQ, sortBy, sortDir]);
+  // Summary stats for filtered results
+  const filterStats = useMemo(() => {
+    const debits = filtered.filter(t => t.type === "DEBIT");
+    const credits = filtered.filter(t => t.type === "CREDIT");
+    const totalDebits = debits.reduce((s, t) => s + t.amount, 0);
+    const totalCredits = credits.reduce((s, t) => s + t.amount, 0);
+    return { debitCount: debits.length, creditCount: credits.length, totalDebits, totalCredits, net: totalCredits - totalDebits };
+  }, [filtered]);
   const deleteTxn = (id) => setTxns(prev => prev.filter(t => t.id !== id));
   const saveCategory = (id) => { setTxns(prev => prev.map(t => t.id === id ? { ...t, category: editCat } : t)); setEditingId(null); };
   const toggleSort = (col) => { if (sortBy === col) setSortDir(d => d === "asc" ? "desc" : "asc"); else { setSortBy(col); setSortDir("desc"); } };
   const sortIcon = (col) => sortBy !== col ? <span style={{ opacity: 0.3, fontSize: 9 }}>⇅</span> : <span style={{ fontSize: 9, fontWeight: 800 }}>{sortDir === "asc" ? "↑" : "↓"}</span>;
   const hS = { fontSize: 9, fontWeight: 700, textTransform: "uppercase", letterSpacing: "0.06em", color: "#999", cursor: "pointer", display: "flex", alignItems: "center", gap: 3, userSelect: "none" };
+  const hasFilter = searchQ || catFilter !== "All" || typeFilter !== "All";
   return (
-    <div>
+    <div style={{ paddingBottom: hasFilter ? 56 : 0 }}>
       <SH>Transactions ({filtered.length})</SH>
       <div style={{ display: "flex", gap: 6, marginBottom: 14, flexWrap: "wrap", alignItems: "center" }}>
         <input placeholder="Search..." value={searchQ} onChange={e => setSearchQ(e.target.value)} style={{ border: "2px solid #000", padding: "7px 10px", fontSize: 12, fontFamily: F, flex: 1, minWidth: 100, background: "transparent", outline: "none", fontWeight: 600 }} />
@@ -389,7 +397,7 @@ function TransactionsPage({ txns, setTxns }) {
         <span style={hS} onClick={() => toggleSort("date")}>Date {sortIcon("date")}</span><span style={{ ...hS, cursor: "default" }}>Details</span><span style={hS} onClick={() => toggleSort("category")}>Category {sortIcon("category")}</span><span style={hS} onClick={() => toggleSort("type")}>Type {sortIcon("type")}</span><span style={{ ...hS, justifyContent: "flex-end" }} onClick={() => toggleSort("amount")}>Amt {sortIcon("amount")}</span><span></span>
       </div>
       {filtered.length === 0 && <div style={{ textAlign: "center", color: "#ccc", fontFamily: F, fontSize: 13, padding: "30px 0" }}>No transactions found</div>}
-      <div style={{ maxHeight: "calc(100vh - 220px)", overflowY: "auto" }}>
+      <div style={{ maxHeight: "calc(100vh - 260px)", overflowY: "auto" }}>
         {filtered.map(t => (
           <div key={t.id} style={{ display: "grid", gridTemplateColumns: "64px 1fr 90px 44px 72px 22px", padding: "8px 0", borderBottom: "1px solid #f0f0f0", fontFamily: F, fontSize: 11, alignItems: "center", gap: 2 }}>
             <span style={{ fontSize: 10, color: "#999" }}>{t.dateObj.toLocaleDateString("en-IN", { month: "short", day: "numeric" })}{t.time && <><br/><span style={{ fontSize: 8 }}>{t.time}</span></>}</span>
@@ -401,6 +409,15 @@ function TransactionsPage({ txns, setTxns }) {
           </div>
         ))}
       </div>
+      {/* Sticky summary bar — always visible when any filter is active */}
+      {hasFilter && (
+        <div style={{ position: "fixed", bottom: 0, left: 0, right: 0, zIndex: 80, background: "#000", color: "#fff", fontFamily: F, padding: "10px 20px", display: "flex", justifyContent: "center", gap: 16, alignItems: "center", flexWrap: "wrap" }}>
+          <span style={{ fontSize: 11, fontWeight: 600, opacity: 0.6 }}>{filtered.length} txns</span>
+          <span style={{ fontSize: 12, fontWeight: 700, color: "#FF8A8A" }}>↑ {fmt(filterStats.totalDebits)} <span style={{ fontSize: 9, fontWeight: 500, opacity: 0.6 }}>({filterStats.debitCount})</span></span>
+          <span style={{ fontSize: 12, fontWeight: 700, color: "#7DDBCA" }}>↓ {fmt(filterStats.totalCredits)} <span style={{ fontSize: 9, fontWeight: 500, opacity: 0.6 }}>({filterStats.creditCount})</span></span>
+          <span style={{ fontSize: 12, fontWeight: 800, color: filterStats.net >= 0 ? "#7DDBCA" : "#FF8A8A" }}>Net: {filterStats.net >= 0 ? "+" : ""}{fmt(filterStats.net)}</span>
+        </div>
+      )}
     </div>
   );
 }
@@ -511,17 +528,63 @@ function TrendsPage({ txns, dailyData, categoryData, topMerchants, topTxn }) {
   );
 }
 
-// ─── Calendar Page ─────────────────────────────────────────────────────
+// ─── Day Detail View ───────────────────────────────────────────────────
+function DayDetail({ dateKey, txns, onBack }) {
+  const dayTxns = useMemo(() => txns.filter(t => {
+    const d = t.dateObj;
+    const k = `${d.getFullYear()}-${String(d.getMonth() + 1).padStart(2, "0")}-${String(d.getDate()).padStart(2, "0")}`;
+    return k === dateKey;
+  }).sort((a, b) => (a.dateObj?.getTime?.() || 0) - (b.dateObj?.getTime?.() || 0)), [txns, dateKey]);
+  const debits = dayTxns.filter(t => t.type === "DEBIT");
+  const credits = dayTxns.filter(t => t.type === "CREDIT");
+  const totalDebits = debits.reduce((s, t) => s + t.amount, 0);
+  const totalCredits = credits.reduce((s, t) => s + t.amount, 0);
+  const dateObj = new Date(dateKey + "T12:00:00");
+  const dateLabel = dateObj.toLocaleDateString("en-IN", { weekday: "long", month: "long", day: "numeric", year: "numeric" });
+  return (
+    <div style={{ fontFamily: F, padding: "8px 0" }}>
+      <button onClick={onBack} style={{ border: "none", background: "none", cursor: "pointer", fontSize: 12, fontFamily: F, fontWeight: 700, color: "#999", display: "flex", alignItems: "center", gap: 4, padding: "4px 0", marginBottom: 8 }}>← Back to Calendar</button>
+      <div style={{ fontSize: 16, fontWeight: 800, marginBottom: 14 }}>{dateLabel}</div>
+      <div style={{ display: "flex", gap: 8, marginBottom: 18, flexWrap: "wrap" }}>
+        <StatPill label="Debits" value={fmt(totalDebits)} color="#E63946" sub={`${debits.length} txns`} />
+        <StatPill label="Credits" value={fmt(totalCredits)} color="#2A9D8F" sub={`${credits.length} txns`} />
+        <StatPill label="Net" value={fmt(Math.abs(totalCredits - totalDebits))} color={totalCredits >= totalDebits ? "#2A9D8F" : "#E63946"} sub={totalCredits >= totalDebits ? "Surplus" : "Deficit"} />
+      </div>
+      {dayTxns.length === 0 && <div style={{ textAlign: "center", color: "#ccc", fontSize: 13, padding: "30px 0" }}>No transactions on this day</div>}
+      {dayTxns.length > 0 && (
+        <>
+          <div style={{ display: "grid", gridTemplateColumns: "52px 1fr 80px 68px", padding: "6px 0", borderBottom: "2px solid #000", fontFamily: F, gap: 2 }}>
+            <span style={{ fontSize: 9, fontWeight: 700, color: "#999", textTransform: "uppercase", letterSpacing: "0.06em" }}>Time</span>
+            <span style={{ fontSize: 9, fontWeight: 700, color: "#999", textTransform: "uppercase", letterSpacing: "0.06em" }}>Details</span>
+            <span style={{ fontSize: 9, fontWeight: 700, color: "#999", textTransform: "uppercase", letterSpacing: "0.06em" }}>Category</span>
+            <span style={{ fontSize: 9, fontWeight: 700, color: "#999", textTransform: "uppercase", letterSpacing: "0.06em", textAlign: "right" }}>Amount</span>
+          </div>
+          {dayTxns.map(t => (
+            <div key={t.id} style={{ display: "grid", gridTemplateColumns: "52px 1fr 80px 68px", padding: "9px 0", borderBottom: "1px solid #f0f0f0", fontFamily: F, fontSize: 11, alignItems: "center", gap: 2 }}>
+              <span style={{ fontSize: 10, color: "#999" }}>{t.time || "—"}</span>
+              <span style={{ overflow: "hidden", textOverflow: "ellipsis", whiteSpace: "nowrap", fontWeight: 600, paddingRight: 4 }}>{t.detail}</span>
+              <span style={{ fontSize: 8, color: getCatColor(t.category), fontWeight: 600, display: "flex", alignItems: "center", gap: 2 }}><span style={{ width: 5, height: 5, borderRadius: 2, background: getCatColor(t.category), display: "inline-block" }} />{t.category}</span>
+              <span style={{ textAlign: "right", fontWeight: 700, fontSize: 12, color: t.type === "CREDIT" ? "#2A9D8F" : "#E63946" }}>{t.type === "CREDIT" ? "+" : "-"}{fmt(t.amount)}</span>
+            </div>
+          ))}
+        </>
+      )}
+    </div>
+  );
+}
+
+// ─── Calendar Page (calendar centered above, threshold below, clickable) ──
 function CalendarPage({ txns }) {
   const [mode, setMode] = useState("spent");
   const [threshold, setThreshold] = useState(500);
   const [inputVal, setInputVal] = useState("500");
+  const [selectedDay, setSelectedDay] = useState(null); // dateKey string or null
 
   const dates = txns.map(t => t.dateObj);
   const refDate = dates.length ? new Date(Math.max(...dates)) : new Date();
   const [viewYear, setViewYear] = useState(refDate.getFullYear());
   const [viewMonth, setViewMonth] = useState(refDate.getMonth());
-  const monthNames = ["January","February","March","April","May","June","July","August","September","October","November","December"];
+  const monthNames = ["Jan","Feb","Mar","Apr","May","Jun","Jul","Aug","Sep","Oct","Nov","Dec"];
   const dayHeaders = ["M", "T", "W", "T", "F", "S", "S"];
 
   const dailyMap = useMemo(() => {
@@ -564,7 +627,7 @@ function CalendarPage({ txns }) {
   }
   const avgPerDay = daysInMonth > 0 ? Math.round(monthTotal / daysInMonth) : 0;
 
-  const shiftMonth = (dir) => { let m = viewMonth + dir, y = viewYear; if (m < 0) { m = 11; y--; } if (m > 11) { m = 0; y++; } setViewYear(y); setViewMonth(m); };
+  const shiftMonth = (dir) => { let m = viewMonth + dir, y = viewYear; if (m < 0) { m = 11; y--; } if (m > 11) { m = 0; y++; } setViewYear(y); setViewMonth(m); setSelectedDay(null); };
 
   function getCellColor(val, isFuture) {
     if (isFuture) return "#fff";
@@ -587,66 +650,90 @@ function CalendarPage({ txns }) {
   const activeLabel = isSpentMode ? "Spent Days" : "Received Days";
   const activeColor = isSpentMode ? "#E63946" : "#2A9D8F";
 
-  return (
-    <div style={{ fontFamily: F, maxWidth: 480 }}>
-      <SH>Detailed Analysis</SH>
-      <ThresholdAnalysis txns={txns} mode={mode} setMode={setMode} threshold={threshold} setThreshold={setThreshold} inputVal={inputVal} setInputVal={setInputVal} />
+  // If a day is selected, show detail view
+  if (selectedDay) {
+    return <DayDetail dateKey={selectedDay} txns={txns} onBack={() => setSelectedDay(null)} />;
+  }
 
-      <SH>Monthly Calendar — {isSpentMode ? "Spending" : "Received"}</SH>
-      <div style={{ display: "flex", alignItems: "center", justifyContent: "center", gap: 16, marginBottom: 10 }}>
-        <button onClick={() => shiftMonth(-1)} style={{ border: "none", background: "none", fontSize: 16, cursor: "pointer" }}>←</button>
-        <span style={{ fontSize: 14, fontWeight: 800, minWidth: 140, textAlign: "center" }}>{monthNames[viewMonth]} {viewYear}</span>
-        <button onClick={() => shiftMonth(1)} style={{ border: "none", background: "none", fontSize: 16, cursor: "pointer" }}>→</button>
+  return (
+    <div style={{ fontFamily: F, padding: "8px 0" }}>
+      {/* ── Calendar section: centered ── */}
+      <div style={{ display: "flex", flexDirection: "column", alignItems: "center", marginBottom: 28 }}>
+        <div style={{ display: "flex", alignItems: "center", justifyContent: "center", gap: 16, marginBottom: 10 }}>
+          <button onClick={() => shiftMonth(-1)} style={{ border: "none", background: "none", fontSize: 16, cursor: "pointer" }}>←</button>
+          <span style={{ fontSize: 14, fontWeight: 800, minWidth: 120, textAlign: "center" }}>{monthNames[viewMonth]} {viewYear}</span>
+          <button onClick={() => shiftMonth(1)} style={{ border: "none", background: "none", fontSize: 16, cursor: "pointer" }}>→</button>
+        </div>
+
+        <div style={{ display: "flex", gap: 4, marginBottom: 10 }}>
+          {["spent", "received"].map(m => (<button key={m} onClick={() => setMode(m)} style={{ padding: "4px 10px", border: "2px solid #000", cursor: "pointer", background: mode === m ? "#000" : "transparent", color: mode === m ? "#fff" : "#000", fontSize: 9, fontFamily: F, fontWeight: 700, textTransform: "uppercase" }}>{m}</button>))}
+        </div>
+
+        <div style={{ borderRadius: 8, overflow: "hidden", border: "1px solid #ddd", width: "100%", maxWidth: 340 }}>
+          <div style={{ display: "grid", gridTemplateColumns: "repeat(7, 1fr)" }}>
+            {dayHeaders.map((d, i) => (
+              <div key={i} style={{ height: 22, display: "flex", alignItems: "center", justifyContent: "center", fontSize: 9, fontWeight: 700, color: "#666", background: "#f0f0f0", borderBottom: "2px solid #000", borderRight: i < 6 ? "1px solid #ddd" : "none" }}>{d}</div>
+            ))}
+          </div>
+          <div style={{ display: "grid", gridTemplateColumns: "repeat(7, 1fr)" }}>
+            {cells.map((day, i) => {
+              if (day === null) return <div key={`e${i}`} style={{ height: 34, borderBottom: "1px solid #eee", borderRight: i % 7 < 6 ? "1px solid #eee" : "none", background: "#fafafa" }} />;
+              const key = `${viewYear}-${String(viewMonth + 1).padStart(2, "0")}-${String(day).padStart(2, "0")}`;
+              const dm = dailyMap[key];
+              const val = dm ? (isSpentMode ? dm.spent : dm.received) : 0;
+              const isToday = key === todayKey;
+              const isFuture = key > todayKey;
+              const meetsThreshold = val > 0 && val >= threshold;
+              const bg = getCellColor(val, isFuture);
+              const color = getTextColor(val, isFuture);
+              const hasTxns = dm && (dm.spent > 0 || dm.received > 0);
+              return (
+                <div key={i}
+                  title={`${key} — ${val > 0 ? fmt(val) : (isSpentMode ? "No spend" : "No receive")}`}
+                  onClick={() => !isFuture && setSelectedDay(key)}
+                  style={{
+                    height: 34, borderBottom: "1px solid #eee", borderRight: i % 7 < 6 ? "1px solid #eee" : "none",
+                    background: bg, display: "flex", alignItems: "center", justifyContent: "center", gap: 1,
+                    outline: isToday ? "2.5px solid #000" : meetsThreshold && !isFuture ? `1.5px solid ${activeColor}` : "none",
+                    outlineOffset: "-1px", position: "relative", zIndex: isToday ? 2 : 1,
+                    cursor: isFuture ? "default" : "pointer",
+                  }}>
+                  <span style={{ fontSize: 9, fontWeight: isToday ? 900 : 600, color, lineHeight: 1 }}>{day}</span>
+                  {val > 0 && !isFuture && <span style={{ fontSize: 6, fontWeight: 700, color, lineHeight: 1 }}>{val >= 1000 ? `${(val / 1000).toFixed(1)}k` : val}</span>}
+                </div>
+              );
+            })}
+          </div>
+        </div>
+
+        {/* Legend */}
+        <div style={{ display: "flex", justifyContent: "center", gap: 10, fontSize: 9, color: "#555", marginTop: 8, fontWeight: 600, flexWrap: "wrap" }}>
+          {isSpentMode ? (<>
+            <span style={{ display: "flex", alignItems: "center", gap: 3 }}><span style={{ width: 10, height: 10, background: "#d4edda", border: "1px solid #aaa", display: "inline-block", borderRadius: 2 }} /> No spend</span>
+            <span style={{ display: "flex", alignItems: "center", gap: 3 }}><span style={{ width: 10, height: 10, background: "rgb(230,170,170)", border: "1px solid #aaa", display: "inline-block", borderRadius: 2 }} /> Low</span>
+            <span style={{ display: "flex", alignItems: "center", gap: 3 }}><span style={{ width: 10, height: 10, background: "rgb(230,50,50)", border: "1px solid #aaa", display: "inline-block", borderRadius: 2 }} /> High</span>
+          </>) : (<>
+            <span style={{ display: "flex", alignItems: "center", gap: 3 }}><span style={{ width: 10, height: 10, background: "#fff0f0", border: "1px solid #aaa", display: "inline-block", borderRadius: 2 }} /> No receive</span>
+            <span style={{ display: "flex", alignItems: "center", gap: 3 }}><span style={{ width: 10, height: 10, background: "rgb(180,220,180)", border: "1px solid #aaa", display: "inline-block", borderRadius: 2 }} /> Low</span>
+            <span style={{ display: "flex", alignItems: "center", gap: 3 }}><span style={{ width: 10, height: 10, background: "rgb(40,160,80)", border: "1px solid #aaa", display: "inline-block", borderRadius: 2 }} /> High</span>
+          </>)}
+          <span style={{ display: "flex", alignItems: "center", gap: 3 }}><span style={{ width: 10, height: 10, background: "#fff", border: "1px solid #aaa", display: "inline-block", borderRadius: 2 }} /> Future</span>
+        </div>
+
+        <div style={{ fontSize: 9, color: "#bbb", marginTop: 6, fontWeight: 600 }}>Tap a date to view transactions</div>
       </div>
-      <div style={{ display: "flex", gap: 6, marginBottom: 10, flexWrap: "wrap" }}>
+
+      {/* ── Month stats ── */}
+      <div style={{ display: "flex", gap: 6, marginBottom: 18, flexWrap: "wrap" }}>
         <StatPill label="Month Total" value={fmt(monthTotal)} color={activeColor} />
         <StatPill label="Avg / Day" value={fmt(avgPerDay)} />
         <StatPill label={activeLabel} value={String(activeDays)} color={activeColor} sub={`${inactiveDays} inactive`} />
       </div>
 
-      <div style={{ borderRadius: 8, overflow: "hidden", border: "1px solid #ddd", maxWidth: 380 }}>
-        <div style={{ display: "grid", gridTemplateColumns: "repeat(7, 1fr)" }}>
-          {dayHeaders.map((d, i) => (
-            <div key={i} style={{ height: 22, display: "flex", alignItems: "center", justifyContent: "center", fontSize: 9, fontWeight: 700, color: "#666", background: "#f0f0f0", borderBottom: "2px solid #000", borderRight: i < 6 ? "1px solid #ddd" : "none" }}>{d}</div>
-          ))}
-        </div>
-        <div style={{ display: "grid", gridTemplateColumns: "repeat(7, 1fr)" }}>
-          {cells.map((day, i) => {
-            if (day === null) return <div key={`e${i}`} style={{ height: 32, borderBottom: "1px solid #eee", borderRight: i % 7 < 6 ? "1px solid #eee" : "none", background: "#fafafa" }} />;
-            const key = `${viewYear}-${String(viewMonth + 1).padStart(2, "0")}-${String(day).padStart(2, "0")}`;
-            const dm = dailyMap[key];
-            const val = dm ? (isSpentMode ? dm.spent : dm.received) : 0;
-            const isToday = key === todayKey;
-            const isFuture = key > todayKey;
-            const meetsThreshold = val > 0 && val >= threshold;
-            const bg = getCellColor(val, isFuture);
-            const color = getTextColor(val, isFuture);
-            return (
-              <div key={i} title={`${key} — ${val > 0 ? fmt(val) : (isSpentMode ? "No spend" : "No receive")}`} style={{
-                height: 32, borderBottom: "1px solid #eee", borderRight: i % 7 < 6 ? "1px solid #eee" : "none",
-                background: bg, display: "flex", alignItems: "center", justifyContent: "center", gap: 1,
-                outline: isToday ? "2.5px solid #000" : meetsThreshold && !isFuture ? `1.5px solid ${activeColor}` : "none",
-                outlineOffset: "-1px", position: "relative", zIndex: isToday ? 2 : 1, cursor: "default"
-              }}>
-                <span style={{ fontSize: 9, fontWeight: isToday ? 900 : 600, color, lineHeight: 1 }}>{day}</span>
-                {val > 0 && !isFuture && <span style={{ fontSize: 6, fontWeight: 700, color, lineHeight: 1 }}>{val >= 1000 ? `${(val / 1000).toFixed(1)}k` : val}</span>}
-              </div>
-            );
-          })}
-        </div>
-      </div>
-
-      <div style={{ display: "flex", justifyContent: "center", gap: 10, fontSize: 9, color: "#555", marginTop: 8, fontWeight: 600, flexWrap: "wrap" }}>
-        {isSpentMode ? (<>
-          <span style={{ display: "flex", alignItems: "center", gap: 3 }}><span style={{ width: 10, height: 10, background: "#d4edda", border: "1px solid #aaa", display: "inline-block", borderRadius: 2 }} /> No spend</span>
-          <span style={{ display: "flex", alignItems: "center", gap: 3 }}><span style={{ width: 10, height: 10, background: "rgb(230,170,170)", border: "1px solid #aaa", display: "inline-block", borderRadius: 2 }} /> Low</span>
-          <span style={{ display: "flex", alignItems: "center", gap: 3 }}><span style={{ width: 10, height: 10, background: "rgb(230,50,50)", border: "1px solid #aaa", display: "inline-block", borderRadius: 2 }} /> High</span>
-        </>) : (<>
-          <span style={{ display: "flex", alignItems: "center", gap: 3 }}><span style={{ width: 10, height: 10, background: "#fff0f0", border: "1px solid #aaa", display: "inline-block", borderRadius: 2 }} /> No receive</span>
-          <span style={{ display: "flex", alignItems: "center", gap: 3 }}><span style={{ width: 10, height: 10, background: "rgb(180,220,180)", border: "1px solid #aaa", display: "inline-block", borderRadius: 2 }} /> Low</span>
-          <span style={{ display: "flex", alignItems: "center", gap: 3 }}><span style={{ width: 10, height: 10, background: "rgb(40,160,80)", border: "1px solid #aaa", display: "inline-block", borderRadius: 2 }} /> High</span>
-        </>)}
-        <span style={{ display: "flex", alignItems: "center", gap: 3 }}><span style={{ width: 10, height: 10, background: "#fff", border: "1px solid #aaa", display: "inline-block", borderRadius: 2 }} /> Future</span>
+      {/* ── Threshold Analysis (separate section below) ── */}
+      <SH>Threshold Analysis</SH>
+      <div style={{ padding: "4px 0" }}>
+        <ThresholdAnalysis txns={txns} mode={mode} setMode={setMode} threshold={threshold} setThreshold={setThreshold} inputVal={inputVal} setInputVal={setInputVal} />
       </div>
     </div>
   );
@@ -711,7 +798,7 @@ export default function App() {
       <link href="https://fonts.googleapis.com/css2?family=Nunito:wght@400;500;600;700;800&display=swap" rel="stylesheet" />
       <Sidebar page={page} setPage={setPage} txns={txns} fileRef={fileRef} onFile={handleFile} open={sidebarOpen} setOpen={setSidebarOpen} />
       <HamburgerBtn onClick={() => setSidebarOpen(true)} pageName={pageNames[page]} />
-      <div style={{ padding: "8px 20px 50px", maxWidth: 600, margin: "0 auto" }}>
+      <div style={{ padding: "12px 24px 56px", maxWidth: 580, margin: "0 auto" }}>
         {page === PAGES.OVERVIEW && <OverviewPage txns={txns} categoryData={categoryData} totalSpent={totalSpent} totalReceived={totalReceived} dailyData={dailyData} weeklyData={weeklyData} topMerchants={topMerchants} avgDaily={avgDaily} topTxn={topTxn} dateRange={dateRange} />}
         {page === PAGES.CALENDAR && <CalendarPage txns={txns} />}
         {page === PAGES.TRANSACTIONS && <TransactionsPage txns={txns} setTxns={setTxns} />}
